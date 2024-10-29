@@ -5549,6 +5549,101 @@ failed:
 
 
 ngx_int_t
+ngx_ssl_get_subject_altnames(ngx_connection_t *c, ngx_pool_t *pool, ngx_str_t *s) {
+
+    X509                   *cert;
+    GENERAL_NAME           *altname;
+    STACK_OF(GENERAL_NAME) *altnames = NULL;
+    BIO                    *bio;
+    int                     n, i;
+
+    ngx_ssl_error(NGX_LOG_ALERT, c->log, 0, "ngx_ssl_get_subject_altnames start");
+
+    s->len = 0;
+
+    cert = SSL_get_peer_certificate(c->ssl->connection);
+    if (cert == NULL) {
+        return NGX_OK;
+    }
+
+    altnames = X509_get_ext_d2i(cert, NID_subject_alt_name, NULL, NULL);
+    if (altnames == NULL) {
+        X509_free(cert);
+        return NGX_OK;
+    }
+
+    bio = BIO_new(BIO_s_mem());
+    if (bio == NULL) {
+        ngx_ssl_error(NGX_LOG_ALERT, c->log, 0, "BIO_new() failed");
+        GENERAL_NAMES_free(altnames);
+        X509_free(cert);
+        return NGX_ERROR;
+    }
+
+    n = sk_GENERAL_NAME_num(altnames);
+    for (i = 0; i < n; i++) {
+        altname = sk_GENERAL_NAME_value(altnames, i);
+
+        if (i > 0) {
+            // Add comma separator for multiple entries
+            BIO_write(bio, ", ", 2);
+        }
+
+        switch (altname->type) {
+            case GEN_DNS:
+                BIO_printf(bio, "DNS:%s", ASN1_STRING_get0_data(altname->d.dNSName));
+                break;
+            case GEN_IPADD: {
+                unsigned char *ip_addr = ASN1_STRING_get0_data(altname->d.iPAddress);
+                int ip_len = ASN1_STRING_length(altname->d.iPAddress);
+
+                if (ip_len == 4) {
+                    BIO_printf(bio, "IP:%d.%d.%d.%d", ip_addr[0], ip_addr[1], ip_addr[2], ip_addr[3]);
+                } else if (ip_len == 16) {
+                    char ip_str[INET6_ADDRSTRLEN];
+                    inet_ntop(AF_INET6, ip_addr, ip_str, sizeof(ip_str));
+                    BIO_printf(bio, "IP:%s", ip_str);
+                }
+                break;
+            }
+            case GEN_URI:
+                BIO_printf(bio, "URI:%s", ASN1_STRING_get0_data(altname->d.uniformResourceIdentifier));
+                break;
+            case GEN_EMAIL:
+                BIO_printf(bio, "Email:%s", ASN1_STRING_get0_data(altname->d.rfc822Name));
+                break;
+            default:
+                break;
+        }
+    }
+
+    s->len = BIO_pending(bio);
+    s->data = ngx_pnalloc(pool, s->len);
+    if (s->data == NULL) {
+        ngx_ssl_error(NGX_LOG_ALERT, c->log, 0, "Memory allocation failed");
+        goto failed;
+    }
+
+    BIO_read(bio, s->data, s->len);
+    ngx_ssl_error(NGX_LOG_ALERT, c->log, 0, "ngx_ssl_get_subject_altnames done");
+    ngx_ssl_error(NGX_LOG_ALERT, c->log, 0, s->data);
+
+    BIO_free(bio);
+    GENERAL_NAMES_free(altnames);
+    X509_free(cert);
+
+    return NGX_OK;
+
+failed:
+    BIO_free(bio);
+    GENERAL_NAMES_free(altnames);
+    X509_free(cert);
+
+    return NGX_ERROR;
+}
+
+
+ngx_int_t
 ngx_ssl_get_issuer_dn(ngx_connection_t *c, ngx_pool_t *pool, ngx_str_t *s)
 {
     BIO        *bio;
